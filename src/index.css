@@ -1,0 +1,46 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    @apply antialiased;
+  }
+}
+
+/* Custom scrollbar for better look */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+/* Force standard colors for PDF export to avoid oklch issues in html2canvas */
+.pdf-export-safe {
+  background-color: #ffffff !important;
+  color: #111827 !important;
+}
+
+.pdf-export-safe * {
+  border-color: #e5e7eb !important;
+}
+
+.pdf-export-safe h2 {
+  color: #111827 !important;
+}
+
+.pdf-export-safe p, .pdf-export-safe div {
+  color: #374151 !important;
+}
+
+.pdf-export-safe .text-emerald-600 {
+  color: #059669 !important;
+}

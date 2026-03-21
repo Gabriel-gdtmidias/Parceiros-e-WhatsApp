@@ -1,0 +1,5 @@
+{
+  "name": "Atualizações de parceiros Grupo de WhatsApp",
+  "description": "Transforme conversas e prints de Ads em atualizações profissionais para grupos de WhatsApp e relatórios para o Monday.com.",
+  "requestFramePermissions": ["microphone"]
+}

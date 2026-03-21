@@ -1,0 +1,65 @@
+{
+  "entities": {
+    "Client": {
+      "title": "Client",
+      "description": "A client managed by the user.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name of the client."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the client was added."
+        },
+        "uid": {
+          "type": "string",
+          "description": "The user ID who owns this client."
+        }
+      },
+      "required": ["name", "createdAt", "uid"]
+    },
+    "History": {
+      "title": "History",
+      "description": "A summary or message history record for a client.",
+      "type": "object",
+      "properties": {
+        "clientId": {
+          "type": "string",
+          "description": "The ID of the client this history belongs to."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["communication", "account_actions", "group_update", "client_response"],
+          "description": "The type of summary generated."
+        },
+        "content": {
+          "type": "string",
+          "description": "The generated summary content."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the history was generated."
+        },
+        "uid": {
+          "type": "string",
+          "description": "The user ID who owns this history."
+        }
+      },
+      "required": ["clientId", "mode", "content", "createdAt", "uid"]
+    }
+  },
+  "firestore": {
+    "/clients/{clientId}": {
+      "schema": "Client",
+      "description": "Collection of clients."
+    },
+    "/histories/{historyId}": {
+      "schema": "History",
+      "description": "Collection of history records for clients."
+    }
+  }
+}
