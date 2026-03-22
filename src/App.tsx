@@ -946,7 +946,7 @@ export default function App() {
                   <div className="w-10 h-10 bg-[#00b894] rounded-xl flex items-center justify-center text-white shadow-sm">
                     <MessageSquareText size={24} />
                   </div>
-                  <h1 className="font-bold text-xl tracking-tight text-[#1a1a1a]">Atualizações de parceiros</h1>
+                  <h1 className="font-bold text-xl tracking-tight text-[#1a1a1a]">App Ads Flow</h1>
                 </div>
                 
                 <div className="flex items-center gap-6">
