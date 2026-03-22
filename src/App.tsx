@@ -42,29 +42,16 @@ import {
   type SummaryMode 
 } from "./services/gemini";
 import { cn } from "./lib/utils";
-import { auth, db } from "./firebase";
-import { 
-  onAuthStateChanged, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  signOut,
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  updateProfile,
-  type User
-} from "firebase/auth";
-import { 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  query, 
-  where, 
-  orderBy, 
-  deleteDoc, 
-  doc, 
-  serverTimestamp,
-  getDocFromServer
-} from "firebase/firestore";
+import { supabase } from "./lib/supabase";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
+
+// Define a common User interface to minimize changes
+interface User {
+  uid: string;
+  email?: string;
+  displayName?: string;
+  photoURL?: string;
+}
 
 // Error Boundary Component
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
@@ -129,6 +116,7 @@ export default function App() {
   const [name, setName] = useState("");
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [showResendLink, setShowResendLink] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<string>("");
   const [clientHistories, setClientHistories] = useState<HistoryRecord[]>([]);
@@ -212,28 +200,35 @@ export default function App() {
 
   // Auth Listener
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
+    // Get initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setUser({
+          uid: session.user.id,
+          email: session.user.email,
+          displayName: session.user.user_metadata.full_name || session.user.user_metadata.display_name,
+          photoURL: session.user.user_metadata.avatar_url || session.user.user_metadata.photo_url
+        });
+      }
       setIsAuthReady(true);
     });
-    return () => unsubscribe();
-  }, []);
 
-  // Test Connection
-  useEffect(() => {
-    if (isAuthReady && user) {
-      const testConnection = async () => {
-        try {
-          await getDocFromServer(doc(db, 'test', 'connection'));
-        } catch (error) {
-          if (error instanceof Error && error.message.includes('the client is offline')) {
-            console.error("Please check your Firebase configuration.");
-          }
-        }
-      };
-      testConnection();
-    }
-  }, [isAuthReady, user]);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setUser({
+          uid: session.user.id,
+          email: session.user.email,
+          displayName: session.user.user_metadata.full_name || session.user.user_metadata.display_name,
+          photoURL: session.user.user_metadata.avatar_url || session.user.user_metadata.photo_url
+        });
+      } else {
+        setUser(null);
+      }
+      setIsAuthReady(true);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   // Fetch Clients
   useEffect(() => {
@@ -242,23 +237,39 @@ export default function App() {
       return;
     }
 
-    const q = query(
-      collection(db, "clients"),
-      where("uid", "==", user.uid),
-      orderBy("createdAt", "desc")
-    );
+    const fetchClients = async () => {
+      const { data, error } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('uid', user.uid)
+        .order('created_at', { ascending: false });
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const clientsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Client[];
-      setClients(clientsData);
-    }, (error) => {
-      console.error("Error fetching clients:", error);
-    });
+      if (error) {
+        console.error("Erro ao buscar clientes:", error);
+        setError(`Erro ao carregar clientes: ${error.message}`);
+      } else {
+        setClients(data.map(c => ({
+          id: c.id,
+          name: c.name,
+          createdAt: c.created_at,
+          uid: c.uid
+        })));
+      }
+    };
 
-    return () => unsubscribe();
+    fetchClients();
+
+    // Real-time subscription
+    const channel = supabase
+      .channel('clients-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'clients', filter: `uid=eq.${user.uid}` }, () => {
+        fetchClients();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user]);
 
   // Fetch History for selected client
@@ -268,70 +279,95 @@ export default function App() {
       return;
     }
 
-    const q = query(
-      collection(db, "histories"),
-      where("clientId", "==", selectedClientId),
-      where("uid", "==", user.uid),
-      orderBy("createdAt", "desc")
-    );
+    const fetchHistories = async () => {
+      const { data, error } = await supabase
+        .from('histories')
+        .select('*')
+        .eq('client_id', selectedClientId)
+        .eq('uid', user.uid)
+        .order('created_at', { ascending: false });
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const historyData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as HistoryRecord[];
-      setClientHistories(historyData);
-    }, (error) => {
-      console.error("Error fetching history:", error);
-    });
+      if (error) {
+        console.error("Erro ao buscar histórico:", error);
+        setError(`Erro ao carregar histórico: ${error.message}`);
+      } else {
+        setClientHistories(data.map(h => ({
+          id: h.id,
+          clientId: h.client_id,
+          mode: h.mode,
+          content: h.content,
+          createdAt: h.created_at,
+          uid: h.uid
+        })));
+      }
+    };
 
-    return () => unsubscribe();
+    fetchHistories();
+
+    const channel = supabase
+      .channel('histories-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'histories', filter: `client_id=eq.${selectedClientId}` }, () => {
+        fetchHistories();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user, selectedClientId]);
-
-  const handleLogin = async () => {
-    setIsAuthLoading(true);
-    setAuthError(null);
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (err) {
-      console.error("Login error:", err);
-      setAuthError("Falha ao entrar com Google.");
-    } finally {
-      setIsAuthLoading(false);
-    }
-  };
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsAuthLoading(true);
     setAuthError(null);
+    setShowResendLink(false);
     try {
       if (authMode === "signup") {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        if (name.trim()) {
-          await updateProfile(userCredential.user, { displayName: name.trim() });
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              full_name: name.trim()
+            }
+          }
+        });
+        if (error) throw error;
+        
+        if (data.user && data.session === null) {
+          setConfirmModal({
+            isOpen: true,
+            title: "Verifique seu e-mail",
+            message: "Um link de confirmação foi enviado para o seu e-mail. Por favor, confirme sua conta para fazer login.",
+            type: "success",
+            onConfirm: () => setAuthMode("login")
+          });
         }
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password
+        });
+        if (error) throw error;
       }
       // Reset fields on success
       setEmail("");
       setPassword("");
       setName("");
     } catch (err: any) {
-      console.error("Email auth error:", err);
-      if (err.code === "auth/email-already-in-use") {
-        setAuthError("Este e-mail já está em uso.");
-      } else if (err.code === "auth/invalid-email") {
-        setAuthError("E-mail inválido.");
-      } else if (err.code === "auth/weak-password") {
-        setAuthError("A senha deve ter pelo menos 6 caracteres.");
-      } else if (err.code === "auth/user-not-found" || err.code === "auth/wrong-password" || err.code === "auth/invalid-credential") {
-        setAuthError("E-mail ou senha incorretos.");
-      } else {
-        setAuthError("Ocorreu um erro na autenticação.");
+      console.error("Erro na autenticação por e-mail:", err);
+      let errorMessage = err.message || "Ocorreu um erro na autenticação.";
+      
+      if (errorMessage.includes("Email not confirmed")) {
+        errorMessage = "Seu e-mail ainda não foi confirmado. Por favor, verifique sua caixa de entrada e clique no link de confirmação.";
+        setShowResendLink(true);
+      } else if (errorMessage.includes("Invalid login credentials")) {
+        errorMessage = "E-mail ou senha incorretos.";
+      } else if (errorMessage.includes("User already registered")) {
+        errorMessage = "Este e-mail já está cadastrado.";
       }
+      
+      setAuthError(errorMessage);
     } finally {
       setIsAuthLoading(false);
     }
@@ -344,16 +380,50 @@ export default function App() {
     }
   }, [user]);
 
+  const handleResendConfirmation = async () => {
+    if (!email) {
+      setAuthError("Por favor, insira seu e-mail para reenviar a confirmação.");
+      return;
+    }
+    setIsAuthLoading(true);
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: email,
+        options: {
+          emailRedirectTo: window.location.origin
+        }
+      });
+      if (error) throw error;
+      
+      setConfirmModal({
+        isOpen: true,
+        title: "E-mail enviado",
+        message: "Um novo link de confirmação foi enviado para o seu e-mail.",
+        type: "success",
+        onConfirm: () => setShowResendLink(false)
+      });
+    } catch (err: any) {
+      console.error("Erro ao reenviar e-mail:", err);
+      setAuthError(err.message || "Erro ao reenviar e-mail de confirmação.");
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
 
     setIsUpdatingProfile(true);
     try {
-      await updateProfile(user, {
-        displayName: profileName,
-        photoURL: profilePhoto
+      const { error } = await supabase.auth.updateUser({
+        data: {
+          display_name: profileName,
+          avatar_url: profilePhoto
+        }
       });
+      if (error) throw error;
       
       setConfirmModal({
         isOpen: true,
@@ -363,7 +433,7 @@ export default function App() {
         onConfirm: () => setIsProfileModalOpen(false)
       });
     } catch (err: any) {
-      console.error("Error updating profile:", err);
+      console.error("Erro ao atualizar perfil:", err);
       setError("Erro ao atualizar perfil. Tente novamente.");
     } finally {
       setIsUpdatingProfile(false);
@@ -387,10 +457,10 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await supabase.auth.signOut();
       setSelectedClientId("");
     } catch (err) {
-      console.error("Logout error:", err);
+      console.error("Erro no logout:", err);
     }
   };
 
@@ -399,16 +469,34 @@ export default function App() {
     if (!user || !newClientName.trim()) return;
 
     try {
-      await addDoc(collection(db, "clients"), {
-        name: newClientName.trim(),
-        createdAt: serverTimestamp(),
-        uid: user.uid
-      });
+      const { error } = await supabase
+        .from('clients')
+        .insert([{
+          name: newClientName.trim(),
+          uid: user.uid
+        }]);
+      
+      if (error) {
+        console.error("Erro detalhado do Supabase:", error);
+        throw error;
+      }
+      
       setNewClientName("");
       setIsClientModalOpen(false);
-    } catch (err) {
-      console.error("Error adding client:", err);
-      setError("Erro ao adicionar cliente.");
+      
+      // Feedback de sucesso
+      setConfirmModal({
+        isOpen: true,
+        title: "Sucesso",
+        message: "Cliente cadastrado com sucesso!",
+        type: "success",
+        onConfirm: () => {}
+      });
+    } catch (err: any) {
+      console.error("Erro ao adicionar cliente:", err);
+      setError(err.message || "Erro ao adicionar cliente. Verifique se a tabela 'clients' existe no Supabase.");
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
@@ -422,10 +510,14 @@ export default function App() {
       type: 'danger',
       onConfirm: async () => {
         try {
-          await deleteDoc(doc(db, "clients", clientId));
+          const { error } = await supabase
+            .from('clients')
+            .delete()
+            .eq('id', clientId);
+          if (error) throw error;
           if (selectedClientId === clientId) setSelectedClientId("");
         } catch (err) {
-          console.error("Error deleting client:", err);
+          console.error("Erro ao remover cliente:", err);
           setError("Erro ao remover cliente.");
         }
       }
@@ -436,15 +528,17 @@ export default function App() {
     if (!user || !selectedClientId) return;
 
     try {
-      await addDoc(collection(db, "histories"), {
-        clientId: selectedClientId,
-        mode,
-        content,
-        createdAt: serverTimestamp(),
-        uid: user.uid
-      });
+      const { error } = await supabase
+        .from('histories')
+        .insert([{
+          client_id: selectedClientId,
+          mode,
+          content,
+          uid: user.uid
+        }]);
+      if (error) throw error;
     } catch (err) {
-      console.error("Error saving history:", err);
+      console.error("Erro ao salvar histórico:", err);
       setError("Erro ao salvar no histórico.");
     }
   };
@@ -474,13 +568,13 @@ export default function App() {
       const records = filteredHistory.map(h => ({
         mode: h.mode,
         content: h.content,
-        createdAt: h.createdAt?.toDate().toLocaleString('pt-BR') || ""
+        createdAt: h.createdAt ? new Date(h.createdAt).toLocaleString('pt-BR') : ""
       }));
 
       const summary = await summarizeHistory(records, periodText);
       setHistorySummary(summary);
     } catch (err) {
-      console.error("Error summarizing history:", err);
+      console.error("Erro ao resumir histórico:", err);
       setError("Falha ao gerar o resumo do histórico.");
     } finally {
       setIsSummarizingHistory(false);
@@ -498,7 +592,7 @@ export default function App() {
       const message = await generateGroupMessageFromHistory(historySummary);
       setGroupMessage(message);
     } catch (err) {
-      console.error("Error generating group message:", err);
+      console.error("Erro ao gerar mensagem de grupo:", err);
       setError("Falha ao gerar a mensagem para o grupo.");
     } finally {
       setIsGeneratingGroupMessage(false);
@@ -563,7 +657,7 @@ export default function App() {
       const fileName = `Resumo_${clients.find(c => c.id === selectedClientId)?.name || "Cliente"}_${new Date().toLocaleDateString("pt-BR").replace(/\//g, "-")}.pdf`;
       pdf.save(fileName);
     } catch (err) {
-      console.error("Error exporting PDF:", err);
+      console.error("Erro ao exportar PDF:", err);
       setError("Falha ao exportar PDF: Verifique se há cores modernas não suportadas.");
     } finally {
       setLoading(false);
@@ -655,10 +749,14 @@ export default function App() {
         try {
           const historiesToDelete = clientHistories.filter(h => !modeToClear || h.mode === modeToClear);
           for (const h of historiesToDelete) {
-            await deleteDoc(doc(db, "histories", h.id));
+            const { error } = await supabase
+              .from('histories')
+              .delete()
+              .eq('id', h.id);
+            if (error) throw error;
           }
         } catch (err) {
-          console.error("Error clearing history:", err);
+          console.error("Erro ao limpar histórico:", err);
           setError("Erro ao limpar histórico.");
         }
       }
@@ -701,7 +799,7 @@ export default function App() {
               });
             }
           } catch (err) {
-            console.error("Transcription error:", err);
+            console.error("Erro na transcrição:", err);
             setError("Falha ao transcrever o áudio. Tente novamente.");
           } finally {
             setIsTranscribing(false);
@@ -724,7 +822,7 @@ export default function App() {
         setRecordingTime(prev => prev + 1);
       }, 1000);
     } catch (err) {
-      console.error("Error accessing microphone:", err);
+      console.error("Erro ao acessar microfone:", err);
       setError("Não foi possível acessar o microfone. Verifique as permissões.");
     }
   };
@@ -809,7 +907,7 @@ export default function App() {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       } catch (err) {
-        console.error("Rich copy failed, falling back to text:", err);
+        console.error("Cópia rica falhou, voltando para texto simples:", err);
         let plainText = currentSummary;
         if (mode === "group_update" || mode === "client_response") {
           plainText = plainText
@@ -933,9 +1031,10 @@ export default function App() {
             name={name}
             setName={setName}
             handleEmailAuth={handleEmailAuth}
-            handleLogin={handleLogin}
+            handleResendConfirmation={handleResendConfirmation}
             isAuthLoading={isAuthLoading}
             authError={authError}
+            showResendLink={showResendLink}
           />
         ) : (
           <>
@@ -1290,7 +1389,7 @@ export default function App() {
                                   <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-1 text-[10px] text-gray-400 font-medium">
                                       <Calendar size={10} />
-                                      {record.createdAt?.toDate().toLocaleString('pt-BR')}
+                                      {record.createdAt ? new Date(record.createdAt).toLocaleString('pt-BR') : ""}
                                     </div>
                                     <button 
                                       onClick={() => {
@@ -1301,9 +1400,13 @@ export default function App() {
                                           type: 'danger',
                                           onConfirm: async () => {
                                             try {
-                                              await deleteDoc(doc(db, "histories", record.id));
+                                              const { error } = await supabase
+                                                .from('histories')
+                                                .delete()
+                                                .eq('id', record.id);
+                                              if (error) throw error;
                                             } catch (err) {
-                                              console.error("Error deleting record:", err);
+                                              console.error("Erro ao excluir registro:", err);
                                               setError("Erro ao remover registro.");
                                             }
                                           }
@@ -1413,8 +1516,14 @@ export default function App() {
             ].map((item) => (
               <div
                 key={item.id}
+                onClick={() => {
+                  setMode(item.id as SummaryMode);
+                  setTimeout(() => {
+                    inputAreaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  }, 100);
+                }}
                 className={cn(
-                  "bg-white rounded-[32px] p-8 flex flex-col gap-6 transition-all border-2 shadow-sm group",
+                  "bg-white rounded-[32px] p-8 flex flex-col gap-6 transition-all border-2 shadow-sm group cursor-pointer",
                   mode === item.id 
                     ? "border-[#00b894] ring-4 ring-emerald-500/5 shadow-xl" 
                     : "border-transparent hover:shadow-lg hover:border-gray-100"
@@ -1434,20 +1543,14 @@ export default function App() {
                   </p>
                 </div>
 
-                <button
-                  onClick={() => {
-                    setMode(item.id as SummaryMode);
-                    setTimeout(() => {
-                      inputAreaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-                    }, 100);
-                  }}
+                <div
                   className={cn(
                     "text-sm font-bold flex items-center gap-1 transition-colors w-fit",
                     mode === item.id ? "text-[#00b894]" : "text-gray-400 group-hover:text-[#1a1a1a]"
                   )}
                 >
                   {item.action}
-                </button>
+                </div>
               </div>
             ))}
           </div>
@@ -1852,9 +1955,10 @@ const LoginScreen = ({
   name, 
   setName, 
   handleEmailAuth, 
-  handleLogin, 
+  handleResendConfirmation,
   isAuthLoading, 
-  authError 
+  authError,
+  showResendLink
 }: any) => {
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-[#f5f5f5]">
@@ -1874,9 +1978,19 @@ const LoginScreen = ({
         </div>
 
         {authError && (
-          <div className="bg-red-50 border border-red-100 text-red-600 px-4 py-3 rounded-2xl text-sm flex items-center gap-2 animate-in slide-in-from-top-2">
-            <AlertTriangle size={18} />
-            {authError}
+          <div className="bg-red-50 border border-red-100 text-red-600 px-4 py-3 rounded-2xl text-sm flex flex-col gap-2 animate-in slide-in-from-top-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={18} className="shrink-0" />
+              <span>{authError}</span>
+            </div>
+            {showResendLink && (
+              <button 
+                onClick={handleResendConfirmation}
+                className="text-xs font-bold uppercase tracking-wider text-emerald-600 hover:text-emerald-700 mt-1 self-start ml-7"
+              >
+                Reenviar e-mail de confirmação
+              </button>
+            )}
           </div>
         )}
 
@@ -1925,29 +2039,6 @@ const LoginScreen = ({
             {isAuthLoading ? <Loader2 className="animate-spin" size={20} /> : (authMode === "login" ? "Entrar" : "Criar Conta")}
           </button>
         </form>
-
-        <div className="relative">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-black/5"></div>
-          </div>
-          <div className="relative flex justify-center text-xs uppercase">
-            <span className="bg-white px-4 text-[#9e9e9e] font-bold tracking-widest">Ou continue com</span>
-          </div>
-        </div>
-
-        <button 
-          onClick={handleLogin}
-          disabled={isAuthLoading}
-          className="w-full py-4 bg-white border border-black/10 rounded-2xl font-bold text-[#1a1a1a] hover:bg-gray-50 transition-all shadow-sm flex items-center justify-center gap-3"
-        >
-          <svg className="w-5 h-5" viewBox="0 0 24 24">
-            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
-            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
-            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-          </svg>
-          Google
-        </button>
 
         <div className="text-center">
           <button 
