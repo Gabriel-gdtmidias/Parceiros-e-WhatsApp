@@ -16,6 +16,7 @@ import {
   Users,
   Mic,
   MessageCircle,
+  Reply,
   Send,
   UserPlus,
   UserMinus,
@@ -26,7 +27,9 @@ import {
   Calendar,
   FileDown,
   AlertTriangle,
-  Search
+  Search,
+  Camera,
+  User as UserIcon
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { jsPDF } from "jspdf";
@@ -45,6 +48,9 @@ import {
   signInWithPopup, 
   GoogleAuthProvider, 
   signOut,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile,
   type User
 } from "firebase/auth";
 import { 
@@ -117,12 +123,23 @@ interface HistoryRecord {
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<string>("");
   const [clientHistories, setClientHistories] = useState<HistoryRecord[]>([]);
   const [isClientModalOpen, setIsClientModalOpen] = useState(false);
   const [newClientName, setNewClientName] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
+  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
+  const profilePhotoInputRef = useRef<HTMLInputElement>(null);
   const [historySummary, setHistorySummary] = useState<string | null>(null);
   const [groupMessage, setGroupMessage] = useState<string | null>(null);
   const [isSummarizingHistory, setIsSummarizingHistory] = useState(false);
@@ -133,7 +150,7 @@ export default function App() {
     title: string;
     message: string;
     onConfirm: () => void;
-    type: 'danger' | 'warning';
+    type: 'danger' | 'warning' | 'success';
   }>({
     isOpen: false,
     title: "",
@@ -178,7 +195,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [mode, setMode] = useState<SummaryMode>("communication");
+  const [mode, setMode] = useState<SummaryMode | null>(null);
   const [image, setImage] = useState<{ data: string; mimeType: string; preview: string } | null>(null);
   const [audio, setAudio] = useState<{ data: string; mimeType: string; fileName: string } | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -186,6 +203,7 @@ export default function App() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   
   const resultRef = useRef<HTMLDivElement>(null);
+  const inputAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -271,12 +289,99 @@ export default function App() {
   }, [user, selectedClientId]);
 
   const handleLogin = async () => {
+    setIsAuthLoading(true);
+    setAuthError(null);
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
     } catch (err) {
       console.error("Login error:", err);
-      setError("Falha ao entrar com Google.");
+      setAuthError("Falha ao entrar com Google.");
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsAuthLoading(true);
+    setAuthError(null);
+    try {
+      if (authMode === "signup") {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        if (name.trim()) {
+          await updateProfile(userCredential.user, { displayName: name.trim() });
+        }
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+      // Reset fields on success
+      setEmail("");
+      setPassword("");
+      setName("");
+    } catch (err: any) {
+      console.error("Email auth error:", err);
+      if (err.code === "auth/email-already-in-use") {
+        setAuthError("Este e-mail já está em uso.");
+      } else if (err.code === "auth/invalid-email") {
+        setAuthError("E-mail inválido.");
+      } else if (err.code === "auth/weak-password") {
+        setAuthError("A senha deve ter pelo menos 6 caracteres.");
+      } else if (err.code === "auth/user-not-found" || err.code === "auth/wrong-password" || err.code === "auth/invalid-credential") {
+        setAuthError("E-mail ou senha incorretos.");
+      } else {
+        setAuthError("Ocorreu um erro na autenticação.");
+      }
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user) {
+      setProfileName(user.displayName || "");
+      setProfilePhoto(user.photoURL || null);
+    }
+  }, [user]);
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+
+    setIsUpdatingProfile(true);
+    try {
+      await updateProfile(user, {
+        displayName: profileName,
+        photoURL: profilePhoto
+      });
+      
+      setConfirmModal({
+        isOpen: true,
+        title: "Perfil Atualizado",
+        message: "Suas informações de perfil foram atualizadas com sucesso.",
+        type: "success",
+        onConfirm: () => setIsProfileModalOpen(false)
+      });
+    } catch (err: any) {
+      console.error("Error updating profile:", err);
+      setError("Erro ao atualizar perfil. Tente novamente.");
+    } finally {
+      setIsUpdatingProfile(false);
+    }
+  };
+
+  const handleProfilePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 1024 * 1024) { // 1MB limit for base64
+        setError("A imagem deve ter menos de 1MB.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setProfilePhoto(reader.result as string);
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -676,8 +781,9 @@ export default function App() {
     }
   };
 
-  const handleCopy = async () => {
-    const currentSummary = summaries[mode];
+  const handleCopy = async (textToCopy?: string) => {
+    if (!mode) return;
+    const currentSummary = textToCopy || summaries[mode];
     if (currentSummary && resultRef.current) {
       try {
         let plainText = currentSummary;
@@ -816,70 +922,98 @@ export default function App() {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-[#f5f5f5] text-[#1a1a1a] font-sans selection:bg-emerald-100 selection:text-emerald-900">
-        {/* Header */}
-        <header className="bg-white border-b border-black/5 sticky top-0 z-20">
-          <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center text-white">
-                <MessageSquareText size={20} />
-              </div>
-              <h1 className="font-semibold text-lg tracking-tight hidden sm:block">Atualizações de parceiros</h1>
-            </div>
-            
-            <div className="flex items-center gap-4">
-              {isAuthReady && (
-                user ? (
-                  <div className="flex items-center gap-3">
-                    <div className="flex flex-col items-end hidden sm:flex">
-                      <span className="text-sm font-bold">{user.displayName}</span>
-                      <span className="text-[10px] text-gray-500">{user.email}</span>
-                    </div>
-                    <button 
-                      onClick={handleLogout}
-                      className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-                      title="Sair"
-                    >
-                      <LogOut size={20} />
-                    </button>
+        {!user && isAuthReady ? (
+          <LoginScreen 
+            authMode={authMode}
+            setAuthMode={setAuthMode}
+            email={email}
+            setEmail={setEmail}
+            password={password}
+            setPassword={setPassword}
+            name={name}
+            setName={setName}
+            handleEmailAuth={handleEmailAuth}
+            handleLogin={handleLogin}
+            isAuthLoading={isAuthLoading}
+            authError={authError}
+          />
+        ) : (
+          <>
+            {/* Header */}
+            <header className="bg-white border-b border-black/5 sticky top-0 z-20">
+              <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-[#00b894] rounded-xl flex items-center justify-center text-white shadow-sm">
+                    <MessageSquareText size={24} />
                   </div>
-                ) : (
-                  <button 
-                    onClick={handleLogin}
-                    className="flex items-center gap-2 px-4 py-2 bg-white border border-black/10 rounded-full text-sm font-bold hover:bg-gray-50 transition-all shadow-sm"
-                  >
-                    <LogIn size={18} />
-                    Entrar com Google
-                  </button>
-                )
-              )}
-            </div>
-          </div>
-        </header>
+                  <h1 className="font-bold text-xl tracking-tight text-[#1a1a1a]">Atualizações de parceiros</h1>
+                </div>
+                
+                <div className="flex items-center gap-6">
+                  {isAuthReady && user && (
+                    <div className="flex items-center gap-4">
+                      <button 
+                        onClick={() => setIsProfileModalOpen(true)}
+                        className="flex items-center gap-3 hover:bg-gray-50 p-1 pr-3 rounded-2xl transition-all group"
+                      >
+                        <div className="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 border border-emerald-200 overflow-hidden">
+                          {user.photoURL ? (
+                            <img src={user.photoURL} alt={user.displayName || "User"} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <UserIcon size={20} />
+                          )}
+                        </div>
+                        <div className="flex flex-col items-start">
+                          <span className="text-sm font-bold text-[#1a1a1a] group-hover:text-emerald-600 transition-colors">
+                            {user.displayName || "Usuário"}
+                          </span>
+                          <span className="text-[10px] text-[#9e9e9e]">{user.email}</span>
+                        </div>
+                      </button>
+                      
+                      <button 
+                        onClick={handleLogout}
+                        className="p-2 text-[#9e9e9e] hover:text-red-500 transition-colors"
+                        title="Sair"
+                      >
+                        <LogOut size={22} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </header>
 
-        <main className="max-w-6xl mx-auto px-6 py-12 space-y-12">
+            <main className="max-w-7xl mx-auto px-6 py-16 space-y-16">
           {/* Hero Section */}
-          <section className="text-center space-y-4">
-            <h2 className="text-4xl font-bold tracking-tight sm:text-5xl">
+          <section className="text-center space-y-6">
+            <h2 className="text-5xl sm:text-6xl font-extrabold tracking-tight text-[#1a1a1a] leading-tight">
               Gestão estratégica <br />
-              <span className="text-emerald-600">em segundos.</span>
+              <span className="text-[#00b894]">em segundos.</span>
             </h2>
-            <p className="text-lg text-[#9e9e9e] max-w-2xl mx-auto">
-              Transforme conversas, áudios e prints de Ads em atualizações profissionais e respostas estratégicas para seus clientes.
+            <p className="text-xl text-[#9e9e9e] max-w-3xl mx-auto leading-relaxed">
+              Transforme conversas, áudios e prints de Ads em atualizações profissionais e <br className="hidden md:block" />
+              respostas estratégicas para seus clientes.
             </p>
           </section>
 
           {/* Client Selection & Management */}
           {user && (
-            <section className="bg-white rounded-3xl p-6 shadow-sm border border-black/5 space-y-6">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <h3 className="text-lg font-bold flex items-center gap-2">
-                    <Users size={20} className="text-emerald-500" />
-                    {selectedClient ? selectedClient.name : "Selecione o Cliente"}
-                  </h3>
-                  <p className="text-xs text-gray-500">O histórico será salvo automaticamente para o cliente selecionado.</p>
+            <section className="bg-white rounded-[40px] p-10 shadow-sm border border-black/5">
+              <div className="flex flex-col lg:flex-row items-center justify-between gap-8">
+                <div className="flex items-center gap-5 flex-1">
+                  <div className="w-14 h-14 bg-emerald-50 rounded-2xl flex items-center justify-center text-[#00b894] shrink-0">
+                    <Users size={28} />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-2xl font-bold text-[#1a1a1a]">
+                      {selectedClient ? selectedClient.name : "Selecione o Cliente"}
+                    </h3>
+                    <p className="text-sm text-[#9e9e9e]">O histórico será salvo automaticamente para o cliente selecionado.</p>
+                  </div>
                 </div>
-                <div className="flex flex-col sm:flex-row items-center gap-2 w-full sm:w-auto flex-1">
+                
+                <div className="flex items-center gap-3 w-full lg:w-auto">
                   <ClientSelector 
                     clients={clients}
                     selectedClientId={selectedClientId}
@@ -887,34 +1021,33 @@ export default function App() {
                   />
                   <button 
                     onClick={() => setIsClientModalOpen(true)}
-                    className="p-2.5 bg-emerald-500 text-white rounded-2xl hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20"
+                    className="w-12 h-12 bg-[#00b894] text-white rounded-2xl flex items-center justify-center hover:bg-[#00a383] transition-all shadow-lg shadow-[#00b894]/20 shrink-0"
                     title="Adicionar Cliente"
                   >
-                    <UserPlus size={20} />
+                    <UserPlus size={22} />
                   </button>
-                  {selectedClientId && (
-                    <div className="flex items-center gap-2">
-                      <button 
-                        onClick={() => handleClearHistory()}
-                        className="p-2.5 bg-white border border-orange-100 text-orange-500 rounded-2xl hover:bg-orange-50 transition-all"
-                        title="Limpar Todo o Histórico"
-                      >
-                        <Trash2 size={20} />
-                      </button>
-                      <button 
-                        onClick={() => handleDeleteClient(selectedClientId)}
-                        className="p-2.5 bg-white border border-red-100 text-red-500 rounded-2xl hover:bg-red-50 transition-all"
-                        title="Remover Cliente"
-                      >
-                        <UserMinus size={20} />
-                      </button>
-                    </div>
-                  )}
                 </div>
               </div>
 
               {selectedClientId && (
-                <div className="pt-4 border-t border-black/5 flex items-center justify-between">
+                <div className="mt-8 pt-8 border-t border-black/5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => handleClearHistory()}
+                      className="p-2.5 bg-white border border-orange-100 text-orange-500 rounded-2xl hover:bg-orange-50 transition-all"
+                      title="Limpar Todo o Histórico"
+                    >
+                      <Trash2 size={20} />
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteClient(selectedClientId)}
+                      className="p-2.5 bg-white border border-red-100 text-red-500 rounded-2xl hover:bg-red-50 transition-all"
+                      title="Remover Cliente"
+                    >
+                      <UserMinus size={20} />
+                    </button>
+                  </div>
+                  
                   <button 
                     onClick={() => setIsHistoryOpen(!isHistoryOpen)}
                     className="flex items-center gap-2 text-sm font-bold text-emerald-600 hover:text-emerald-700 transition-colors"
@@ -1107,10 +1240,10 @@ export default function App() {
                   {/* Categorized History Boxes */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {[
-                      { id: "communication", label: "Comunicados (Monday)", icon: LayoutList, color: "blue" },
-                      { id: "account_actions", label: "Ações da Conta (Monday)", icon: Briefcase, color: "purple" },
+                      { id: "communication", label: "Comunicado grupo", icon: LayoutList, color: "blue" },
+                      { id: "account_actions", label: "Ações da conta", icon: Briefcase, color: "purple" },
                       { id: "group_update", label: "Atualizações de Grupo", icon: Users, color: "emerald" },
-                      { id: "client_response", label: "Respostas ao Cliente", icon: MessageCircle, color: "orange" }
+                      { id: "client_response", label: "Responder mensagem cliente", icon: MessageCircle, color: "orange" }
                     ].map(category => {
                       const filtered = getFilteredHistory().filter(h => h.mode === category.id);
                       return (
@@ -1243,114 +1376,132 @@ export default function App() {
           )}
 
           {/* Mode Selection */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <button
-            onClick={() => setMode("communication")}
-            className={cn(
-              "flex flex-col items-center justify-center gap-2 px-4 py-6 rounded-2xl font-medium transition-all border text-center",
-              mode === "communication" 
-                ? "bg-white text-emerald-600 shadow-sm border-emerald-100 ring-1 ring-emerald-100" 
-                : "bg-white/50 text-[#9e9e9e] hover:text-[#1a1a1a] border-transparent hover:bg-white"
-            )}
-          >
-            <LayoutList size={24} />
-            <span className="text-sm">Comunicado (Monday)</span>
-          </button>
-          <button
-            onClick={() => setMode("account_actions")}
-            className={cn(
-              "flex flex-col items-center justify-center gap-2 px-4 py-6 rounded-2xl font-medium transition-all border text-center",
-              mode === "account_actions" 
-                ? "bg-white text-emerald-600 shadow-sm border-emerald-100 ring-1 ring-emerald-100" 
-                : "bg-white/50 text-[#9e9e9e] hover:text-[#1a1a1a] border-transparent hover:bg-white"
-            )}
-          >
-            <Briefcase size={24} />
-            <span className="text-sm">Ações da conta (Monday)</span>
-          </button>
-          <button
-            onClick={() => setMode("group_update")}
-            className={cn(
-              "flex flex-col items-center justify-center gap-2 px-4 py-6 rounded-2xl font-medium transition-all border text-center",
-              mode === "group_update" 
-                ? "bg-white text-emerald-600 shadow-sm border-emerald-100 ring-1 ring-emerald-100" 
-                : "bg-white/50 text-[#9e9e9e] hover:text-[#1a1a1a] border-transparent hover:bg-white"
-            )}
-          >
-            <Users size={24} />
-            <span className="text-sm">Enviar mensagem de atualização</span>
-          </button>
-          <button
-            onClick={() => setMode("client_response")}
-            className={cn(
-              "flex flex-col items-center justify-center gap-2 px-4 py-6 rounded-2xl font-medium transition-all border text-center",
-              mode === "client_response" 
-                ? "bg-white text-emerald-600 shadow-sm border-emerald-100 ring-1 ring-emerald-100" 
-                : "bg-white/50 text-[#9e9e9e] hover:text-[#1a1a1a] border-transparent hover:bg-white"
-            )}
-          >
-            <MessageCircle size={24} />
-            <span className="text-sm">Responder Mensagem</span>
-          </button>
-        </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            {[
+              {
+                id: "communication",
+                title: "Comunicado em grupo",
+                description: "Resumo executivo para histórico do projeto.",
+                icon: MessageSquareText,
+                action: "Acessar",
+                color: "emerald"
+              },
+              {
+                id: "account_actions",
+                title: "Ações da conta",
+                description: "Lista técnica de tarefas e ajustes realizados.",
+                icon: Briefcase,
+                action: "Criar",
+                color: "blue"
+              },
+              {
+                id: "group_update",
+                title: "Enviar mensagem",
+                description: "Quando você inicia a conversa ou envia um feedback.",
+                icon: Send,
+                action: "Escrever",
+                color: "indigo"
+              },
+              {
+                id: "client_response",
+                title: "Responder mensagem cliente",
+                description: "Quando você responde a uma mensagem do cliente.",
+                icon: Reply,
+                action: "Responder",
+                color: "slate"
+              }
+            ].map((item) => (
+              <div
+                key={item.id}
+                className={cn(
+                  "bg-white rounded-[32px] p-8 flex flex-col gap-6 transition-all border-2 shadow-sm group",
+                  mode === item.id 
+                    ? "border-[#00b894] ring-4 ring-emerald-500/5 shadow-xl" 
+                    : "border-transparent hover:shadow-lg hover:border-gray-100"
+                )}
+              >
+                <div className={cn(
+                  "w-12 h-12 rounded-full flex items-center justify-center transition-colors",
+                  item.color === "emerald" ? "bg-[#00b894] text-white" : "bg-[#f0f4f8] text-[#334e68]"
+                )}>
+                  <item.icon size={24} />
+                </div>
+                
+                <div className="space-y-3 flex-1">
+                  <h3 className="text-xl font-bold text-[#1a1a1a]">{item.title}</h3>
+                  <p className="text-sm text-[#9e9e9e] leading-relaxed">
+                    {item.description}
+                  </p>
+                </div>
 
-        <div className="text-center text-xs text-[#9e9e9e] -mt-8 space-y-1">
-          <p>
-            <strong>Comunicado (Monday):</strong> Resumo executivo para histórico do projeto. | 
-            <strong> Ações da conta (Monday):</strong> Lista técnica de tarefas e ajustes realizados.
-          </p>
-          <p>
-            <strong>Enviar mensagem de atualização:</strong> Quando você inicia a conversa ou envia um feedback. | 
-            <strong> Responder Mensagem:</strong> Quando você responde a uma mensagem do cliente.
-          </p>
-        </div>
+                <button
+                  onClick={() => {
+                    setMode(item.id as SummaryMode);
+                    setTimeout(() => {
+                      inputAreaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    }, 100);
+                  }}
+                  className={cn(
+                    "text-sm font-bold flex items-center gap-1 transition-colors w-fit",
+                    mode === item.id ? "text-[#00b894]" : "text-gray-400 group-hover:text-[#1a1a1a]"
+                  )}
+                >
+                  {item.action}
+                </button>
+              </div>
+            ))}
+          </div>
 
         {/* Input Area */}
-        <div className="bg-white rounded-3xl shadow-sm border border-black/5 overflow-hidden transition-all duration-300 focus-within:shadow-md focus-within:border-emerald-200">
-          <div className="p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <label htmlFor="chat-input" className="text-sm font-semibold uppercase tracking-wider text-[#9e9e9e] flex items-center gap-2">
-                <ChevronRight size={14} className="text-emerald-500" />
-                {mode === "client_response" 
-                  ? "O que você quer dizer ao cliente? (Texto ou Áudio)" 
-                  : mode === "account_actions" || mode === "group_update" 
-                    ? "Cole a conversa ou print das campanhas" 
-                    : "Cole a conversa aqui"}
-              </label>
-              <div className="flex items-center gap-3">
-                {Object.values(chatTexts).some(text => text.trim() !== "") && (
-                  <button 
-                    onClick={handleClearAll}
-                    className="text-[#9e9e9e] hover:text-red-600 transition-colors flex items-center gap-1 text-sm font-medium border border-black/5 px-3 py-1 rounded-full bg-white hover:bg-red-50"
-                  >
-                    <Trash2 size={14} />
-                    Limpar Tudo
-                  </button>
-                )}
-                {(chatTexts[mode] || image || audio) && (
-                  <button 
-                    onClick={handleClear}
-                    className="text-[#9e9e9e] hover:text-red-500 transition-colors flex items-center gap-1 text-sm font-medium"
-                  >
-                    <Trash2 size={14} />
-                    Limpar Atual
-                  </button>
-                )}
+        {mode && (
+          <div 
+            ref={inputAreaRef}
+            className="bg-white rounded-3xl shadow-sm border border-black/5 overflow-hidden transition-all duration-300 focus-within:shadow-md focus-within:border-emerald-200 animate-in slide-in-from-top-4 duration-500"
+          >
+            <div className="p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <label htmlFor="chat-input" className="text-sm font-semibold uppercase tracking-wider text-[#9e9e9e] flex items-center gap-2">
+                  <ChevronRight size={14} className="text-emerald-500" />
+                  {mode === "client_response" 
+                    ? "O que você quer dizer ao cliente? (Texto ou Áudio)" 
+                    : mode === "account_actions" || mode === "group_update" 
+                      ? "Cole a conversa ou print das campanhas" 
+                      : "Cole a conversa aqui"}
+                </label>
+                <div className="flex items-center gap-3">
+                  {Object.values(chatTexts).some(text => text.trim() !== "") && (
+                    <button 
+                      onClick={handleClearAll}
+                      className="text-[#9e9e9e] hover:text-red-600 transition-colors flex items-center gap-1 text-sm font-medium border border-black/5 px-3 py-1 rounded-full bg-white hover:bg-red-50"
+                    >
+                      <Trash2 size={14} />
+                      Limpar Tudo
+                    </button>
+                  )}
+                  {(chatTexts[mode] || image || audio) && (
+                    <button 
+                      onClick={handleClear}
+                      className="text-[#9e9e9e] hover:text-red-500 transition-colors flex items-center gap-1 text-sm font-medium"
+                    >
+                      <Trash2 size={14} />
+                      Limpar Atual
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-            
-            <div className="relative">
-              <textarea
-                id="chat-input"
-                className="w-full h-64 p-4 bg-[#f9f9f9] rounded-2xl border-none focus:ring-2 focus:ring-emerald-500/20 resize-none font-mono text-sm leading-relaxed outline-none transition-all"
-                placeholder={mode === "client_response"
-                  ? "Ex: O cliente está preocupado com o ROAS. Diga que estamos ajustando os criativos e que o acompanhamento é diário..."
-                  : mode === "account_actions" || mode === "group_update"
-                    ? "Cole o log da conversa ou dê Ctrl+V em um print do Meta/Google Ads..." 
-                    : "[10:30, 21/03/2024] João: Vamos marcar a reunião?..."}
-                value={chatTexts[mode]}
-                onChange={(e) => setChatTexts(prev => ({ ...prev, [mode]: e.target.value }))}
-              />
+              
+              <div className="relative">
+                <textarea
+                  id="chat-input"
+                  className="w-full h-64 p-4 bg-[#f9f9f9] rounded-2xl border-none focus:ring-2 focus:ring-emerald-500/20 resize-none font-mono text-sm leading-relaxed outline-none transition-all"
+                  placeholder={mode === "client_response"
+                    ? "Ex: O cliente está preocupado com o ROAS. Diga que estamos ajustando os criativos e que o acompanhamento é diário..."
+                    : mode === "account_actions" || mode === "group_update"
+                      ? "Cole o log da conversa ou dê Ctrl+V em um print do Meta/Google Ads..." 
+                      : "[10:30, 21/03/2024] João: Vamos marcar a reunião?..."}
+                  value={chatTexts[mode]}
+                  onChange={(e) => setChatTexts(prev => ({ ...prev, [mode!]: e.target.value }))}
+                />
 
               {/* Transcribing Indicator Overlay */}
               {isTranscribing && (
@@ -1472,10 +1623,10 @@ export default function App() {
               
               <button
                 onClick={handleSummarize}
-                disabled={loading || (!chatTexts[mode].trim() && !image && !audio)}
+                disabled={loading || !mode || (!chatTexts[mode].trim() && !image && !audio)}
                 className={cn(
                   "flex-[1.5] py-4 rounded-2xl font-semibold text-lg flex items-center justify-center gap-2 transition-all duration-300",
-                  loading || (!chatTexts[mode].trim() && !image && !audio)
+                  loading || !mode || (!chatTexts[mode].trim() && !image && !audio)
                     ? "bg-[#e5e5e5] text-[#9e9e9e] cursor-not-allowed" 
                     : "bg-emerald-500 text-white hover:bg-emerald-600 shadow-lg shadow-emerald-500/20 active:scale-[0.98]"
                 )}
@@ -1489,20 +1640,21 @@ export default function App() {
                   <>
                     <Sparkles size={20} />
                     {mode === "account_actions" 
-                      ? "Gerar Relatório" 
+                      ? "Gerar Ações da Conta" 
                       : mode === "group_update"
-                        ? "Gerar Atualização"
+                        ? "Gerar Mensagem"
                         : mode === "client_response"
                           ? "Gerar Resposta"
-                          : "Gerar Comunicado (Monday)"}
+                          : "Gerar Comunicado"}
                   </>
                 )}
               </button>
             </div>
           </div>
         </div>
+      )}
 
-        {/* Error Message */}
+      {/* Error Message */}
         {error && (
           <div className="bg-red-50 border border-red-100 text-red-600 p-4 rounded-2xl flex items-start gap-3 animate-in fade-in slide-in-from-top-4">
             <Info className="shrink-0 mt-0.5" size={18} />
@@ -1511,17 +1663,17 @@ export default function App() {
         )}
 
         {/* Results Section */}
-        {summaries[mode] && (
+        {mode && summaries[mode] && (
           <div className="space-y-6 animate-in fade-in zoom-in-95 duration-500">
             <div className="flex items-center justify-between">
               <h3 className="text-2xl font-bold tracking-tight">
                 {mode === "account_actions" 
-                  ? "Ações Específicas da Conta" 
+                  ? "Ações da Conta" 
                   : mode === "group_update"
-                    ? "Enviar mensagem de atualização"
+                    ? "Enviar Mensagem"
                     : mode === "client_response"
-                      ? "Responder Mensagem"
-                      : "Comunicado no grupo (Monday)"}
+                      ? "Responder Mensagem Cliente"
+                      : "Comunicado em Grupo"}
               </h3>
               <div className="flex gap-2">
                 <button 
@@ -1532,7 +1684,7 @@ export default function App() {
                   Novo
                 </button>
                 <button 
-                  onClick={handleCopy}
+                  onClick={() => handleCopy(summaries[mode]!)}
                   className={cn(
                     "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all",
                     copied 
@@ -1558,7 +1710,7 @@ export default function App() {
               ref={resultRef}
               className="bg-white rounded-3xl p-8 shadow-sm border border-black/5 prose prose-emerald max-w-none markdown-body"
             >
-              <ReactMarkdown>{summaries[mode] || ""}</ReactMarkdown>
+              <ReactMarkdown>{summaries[mode]!}</ReactMarkdown>
             </div>
           </div>
         )}
@@ -1598,6 +1750,78 @@ export default function App() {
             <a href="#" className="text-xs font-semibold uppercase tracking-widest text-[#9e9e9e] hover:text-emerald-500 transition-colors">Contato</a>
           </div>
         </footer>
+        {/* Profile Modal */}
+        {isProfileModalOpen && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-6 animate-in fade-in">
+            <div className="bg-white rounded-[32px] w-full max-w-md overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300">
+              <div className="p-8 space-y-8">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-2xl font-bold tracking-tight">Editar Perfil</h2>
+                  <button 
+                    onClick={() => setIsProfileModalOpen(false)}
+                    className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleUpdateProfile} className="space-y-6">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="relative group">
+                      <div className="w-24 h-24 bg-emerald-50 rounded-full flex items-center justify-center text-emerald-600 border-2 border-dashed border-emerald-200 overflow-hidden">
+                        {profilePhoto ? (
+                          <img src={profilePhoto} alt="Preview" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <UserIcon size={32} />
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => profilePhotoInputRef.current?.click()}
+                        className="absolute bottom-0 right-0 bg-emerald-500 text-white p-2 rounded-full shadow-lg hover:bg-emerald-600 transition-all transform hover:scale-110"
+                      >
+                        <Camera size={16} />
+                      </button>
+                      <input 
+                        type="file"
+                        ref={profilePhotoInputRef}
+                        onChange={handleProfilePhotoChange}
+                        accept="image/*"
+                        className="hidden"
+                      />
+                    </div>
+                    <p className="text-xs text-gray-400">Clique na câmera para alterar a foto</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-gray-400 ml-1">Nome Completo</label>
+                    <input 
+                      type="text"
+                      value={profileName}
+                      onChange={(e) => setProfileName(e.target.value)}
+                      placeholder="Seu nome"
+                      className="w-full px-6 py-4 bg-gray-50 border-none rounded-2xl text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                      required
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isUpdatingProfile}
+                    className="w-full py-4 bg-emerald-500 text-white rounded-2xl font-bold hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {isUpdatingProfile ? (
+                      <Loader2 className="animate-spin" size={20} />
+                    ) : (
+                      "Salvar Alterações"
+                    )}
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Confirmation Modal */}
         <ConfirmationModal 
           isOpen={confirmModal.isOpen}
@@ -1611,10 +1835,132 @@ export default function App() {
           onCancel={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
         />
       </main>
+      </>
+      )}
     </div>
     </ErrorBoundary>
   );
 }
+
+const LoginScreen = ({ 
+  authMode, 
+  setAuthMode, 
+  email, 
+  setEmail, 
+  password, 
+  setPassword, 
+  name, 
+  setName, 
+  handleEmailAuth, 
+  handleLogin, 
+  isAuthLoading, 
+  authError 
+}: any) => {
+  return (
+    <div className="min-h-screen flex items-center justify-center p-6 bg-[#f5f5f5]">
+      <div className="w-full max-w-md bg-white rounded-[40px] p-10 shadow-xl border border-black/5 space-y-8 animate-in fade-in zoom-in-95 duration-500">
+        <div className="text-center space-y-2">
+          <div className="w-16 h-16 bg-[#00b894] rounded-2xl flex items-center justify-center text-white shadow-lg mx-auto mb-4">
+            <MessageSquareText size={32} />
+          </div>
+          <h2 className="text-3xl font-extrabold tracking-tight text-[#1a1a1a]">
+            {authMode === "login" ? "Bem-vindo de volta" : "Criar sua conta"}
+          </h2>
+          <p className="text-[#9e9e9e]">
+            {authMode === "login" 
+              ? "Acesse sua conta para gerenciar seus parceiros." 
+              : "Comece a gerenciar seus parceiros estrategicamente."}
+          </p>
+        </div>
+
+        {authError && (
+          <div className="bg-red-50 border border-red-100 text-red-600 px-4 py-3 rounded-2xl text-sm flex items-center gap-2 animate-in slide-in-from-top-2">
+            <AlertTriangle size={18} />
+            {authError}
+          </div>
+        )}
+
+        <form onSubmit={handleEmailAuth} className="space-y-4">
+          {authMode === "signup" && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold uppercase tracking-wider text-[#9e9e9e] ml-1">Nome Completo</label>
+              <input 
+                type="text" 
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Seu nome"
+                className="w-full px-5 py-3.5 bg-[#f8f9fa] border border-black/5 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+              />
+            </div>
+          )}
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold uppercase tracking-wider text-[#9e9e9e] ml-1">E-mail</label>
+            <input 
+              type="email" 
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="seu@email.com"
+              className="w-full px-5 py-3.5 bg-[#f8f9fa] border border-black/5 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold uppercase tracking-wider text-[#9e9e9e] ml-1">Senha</label>
+            <input 
+              type="password" 
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              className="w-full px-5 py-3.5 bg-[#f8f9fa] border border-black/5 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+            />
+          </div>
+
+          <button 
+            type="submit"
+            disabled={isAuthLoading}
+            className="w-full py-4 bg-[#00b894] text-white rounded-2xl font-bold hover:bg-[#00a383] transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {isAuthLoading ? <Loader2 className="animate-spin" size={20} /> : (authMode === "login" ? "Entrar" : "Criar Conta")}
+          </button>
+        </form>
+
+        <div className="relative">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-black/5"></div>
+          </div>
+          <div className="relative flex justify-center text-xs uppercase">
+            <span className="bg-white px-4 text-[#9e9e9e] font-bold tracking-widest">Ou continue com</span>
+          </div>
+        </div>
+
+        <button 
+          onClick={handleLogin}
+          disabled={isAuthLoading}
+          className="w-full py-4 bg-white border border-black/10 rounded-2xl font-bold text-[#1a1a1a] hover:bg-gray-50 transition-all shadow-sm flex items-center justify-center gap-3"
+        >
+          <svg className="w-5 h-5" viewBox="0 0 24 24">
+            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+          </svg>
+          Google
+        </button>
+
+        <div className="text-center">
+          <button 
+            onClick={() => setAuthMode(authMode === "login" ? "signup" : "login")}
+            className="text-sm font-bold text-[#00b894] hover:underline"
+          >
+            {authMode === "login" ? "Não tem uma conta? Cadastre-se" : "Já tem uma conta? Entre aqui"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const ConfirmationModal = ({ 
   isOpen, 
@@ -1629,7 +1975,7 @@ const ConfirmationModal = ({
   message: string; 
   onConfirm: () => void; 
   onCancel: () => void; 
-  type: 'danger' | 'warning' 
+  type: 'danger' | 'warning' | 'success' 
 }) => {
   if (!isOpen) return null;
 
@@ -1638,9 +1984,11 @@ const ConfirmationModal = ({
       <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border border-black/5 space-y-6 animate-in zoom-in-95 duration-300">
         <div className={cn(
           "w-16 h-16 rounded-full flex items-center justify-center mx-auto",
-          type === 'danger' ? "bg-red-100 text-red-600" : "bg-orange-100 text-orange-600"
+          type === 'danger' ? "bg-red-100 text-red-600" : 
+          type === 'success' ? "bg-emerald-100 text-emerald-600" : 
+          "bg-orange-100 text-orange-600"
         )}>
-          <AlertTriangle size={32} />
+          {type === 'success' ? <CheckCircle2 size={32} /> : <AlertTriangle size={32} />}
         </div>
         
         <div className="text-center space-y-2">
@@ -1653,17 +2001,21 @@ const ConfirmationModal = ({
             onClick={onConfirm}
             className={cn(
               "w-full py-3 rounded-full font-bold text-white transition-all shadow-lg",
-              type === 'danger' ? "bg-red-600 hover:bg-red-700 shadow-red-500/20" : "bg-orange-500 hover:bg-orange-600 shadow-orange-500/20"
+              type === 'danger' ? "bg-red-600 hover:bg-red-700 shadow-red-500/20" : 
+              type === 'success' ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20" :
+              "bg-orange-500 hover:bg-orange-600 shadow-orange-500/20"
             )}
           >
-            Confirmar
+            {type === 'success' ? 'Ok' : 'Confirmar'}
           </button>
-          <button
-            onClick={onCancel}
-            className="w-full py-3 bg-gray-100 text-gray-600 rounded-full font-bold hover:bg-gray-200 transition-all"
-          >
-            Cancelar
-          </button>
+          {type !== 'success' && (
+            <button
+              onClick={onCancel}
+              className="w-full py-3 bg-gray-100 text-gray-600 rounded-full font-bold hover:bg-gray-200 transition-all"
+            >
+              Cancelar
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1729,22 +2081,22 @@ const ClientSelector = ({
   };
 
   return (
-    <div className="relative w-full sm:w-80" ref={dropdownRef}>
+    <div className="relative w-full sm:w-[400px]" ref={dropdownRef}>
       <div 
         className={cn(
-          "flex items-center gap-2 bg-gray-50 border rounded-2xl px-4 py-2.5 transition-all cursor-text",
-          isOpen ? "border-emerald-500 ring-2 ring-emerald-500/10" : "border-black/5"
+          "flex items-center gap-3 bg-[#f8f9fa] border rounded-2xl px-5 py-3.5 transition-all cursor-text",
+          isOpen ? "border-[#00b894] ring-4 ring-[#00b894]/5" : "border-black/5"
         )}
         onClick={() => {
           setIsOpen(true);
           inputRef.current?.focus();
         }}
       >
-        <Search size={16} className="text-gray-400 shrink-0" />
+        <Search size={20} className="text-[#9e9e9e] shrink-0" />
         <input
           ref={inputRef}
           type="text"
-          className="bg-transparent border-none outline-none text-sm font-medium w-full placeholder:text-gray-400"
+          className="bg-transparent border-none outline-none text-base font-medium w-full placeholder:text-[#9e9e9e] text-[#1a1a1a]"
           placeholder={selectedClient ? selectedClient.name : "Buscar ou selecionar cliente..."}
           value={searchTerm}
           onChange={(e) => {
@@ -1754,9 +2106,9 @@ const ClientSelector = ({
           onFocus={() => setIsOpen(true)}
         />
         <ChevronDown 
-          size={16} 
+          size={20} 
           className={cn(
-            "text-gray-400 transition-transform duration-200 shrink-0 cursor-pointer",
+            "text-[#9e9e9e] transition-transform duration-200 shrink-0 cursor-pointer",
             isOpen && "rotate-180"
           )} 
           onClick={(e) => {
