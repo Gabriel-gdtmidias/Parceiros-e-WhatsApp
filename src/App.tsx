@@ -1681,6 +1681,7 @@ const ClientSelector = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const [confirmSelection, setConfirmSelection] = useState<Client | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -1700,10 +1701,31 @@ const ClientSelector = ({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleSelect = (id: string) => {
-    onSelect(id);
-    setIsOpen(false);
-    setSearchTerm("");
+  const handleSelect = (client: Client | null) => {
+    if (client === null) {
+      onSelect("");
+      setIsOpen(false);
+      setSearchTerm("");
+      return;
+    }
+    
+    // If it's already selected, just close
+    if (client.id === selectedClientId) {
+      setIsOpen(false);
+      setSearchTerm("");
+      return;
+    }
+
+    setConfirmSelection(client);
+  };
+
+  const confirmAction = () => {
+    if (confirmSelection) {
+      onSelect(confirmSelection.id);
+      setConfirmSelection(null);
+      setIsOpen(false);
+      setSearchTerm("");
+    }
   };
 
   return (
@@ -1747,11 +1769,22 @@ const ClientSelector = ({
       {isOpen && (
         <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-xl border border-black/5 z-[60] overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
           <div className="max-h-60 overflow-y-auto p-2">
+            {/* Option to clear selection */}
+            <button
+              onClick={() => handleSelect(null)}
+              className="w-full text-left px-4 py-3 rounded-xl text-sm transition-all flex items-center gap-2 text-gray-500 hover:bg-gray-50"
+            >
+              <X size={14} />
+              <span>Nenhum (Limpar seleção)</span>
+            </button>
+
+            <div className="h-px bg-black/5 my-1" />
+
             {filteredClients.length > 0 ? (
               filteredClients.map(client => (
                 <button
                   key={client.id}
-                  onClick={() => handleSelect(client.id)}
+                  onClick={() => handleSelect(client)}
                   className={cn(
                     "w-full text-left px-4 py-3 rounded-xl text-sm transition-all flex items-center justify-between group",
                     selectedClientId === client.id 
@@ -1782,6 +1815,35 @@ const ClientSelector = ({
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Confirmation Dialog */}
+      {confirmSelection && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mb-4">
+              <Users size={24} />
+            </div>
+            <h3 className="text-xl font-bold text-gray-900 mb-2">Confirmar Acesso</h3>
+            <p className="text-gray-500 text-sm mb-6">
+              Deseja acessar os dados e o histórico do cliente <span className="font-bold text-gray-900">"{confirmSelection.name}"</span>?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmSelection(null)}
+                className="flex-1 px-4 py-3 rounded-2xl bg-gray-100 text-gray-700 font-bold hover:bg-gray-200 transition-all"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmAction}
+                className="flex-1 px-4 py-3 rounded-2xl bg-emerald-500 text-white font-bold hover:bg-emerald-600 transition-all shadow-lg shadow-emerald-500/20"
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
